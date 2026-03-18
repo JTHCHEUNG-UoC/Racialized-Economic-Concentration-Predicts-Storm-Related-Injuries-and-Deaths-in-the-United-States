@@ -1,0 +1,640 @@
+---
+title: "Racialized Economic Concentration and Storm-Related Injuries and Deaths in the United States, 2005–2022"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+```
+
+# Overview
+
+This document reproduces the main and supplementary analyses for:
+
+**"Racialized Economic Concentration and Storm-Related Injuries and Deaths in the United States, 2005–2022"**
+
+It:
+1. loads NOAA Storm Events data,
+2. links storm events to county-level ICE values,
+3. merges ACS population and county covariates,
+4. fits primary, sensitivity, spline, and categorical models,
+5. exports tables and figures.
+
+# Reproducibility notes
+
+- Do **not** store Census API keys directly in this file or in a public repository.
+- Store raw input files in `data/raw/` and derived files in `data/derived/`.
+- Outputs are written to `output/tables/` and `output/figures/`.
+
+# Load packages
+
+```{r packages}
+required_pkgs <- c(
+  "dplyr", "readr", "stringr", "purrr", "tidyr", "here",
+  "glmmTMB", "broom.mixed", "modelsummary", "lmtest",
+  "tidycensus", "splines", "ggeffects", "ggplot2",
+  "flextable", "officer", "tigris", "sf", "viridis"
+)
+
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_pkgs) > 0) {
+  install.packages(missing_pkgs)
+}
+
+invisible(lapply(required_pkgs, library, character.only = TRUE))
+
+options(tigris_use_cache = TRUE)
+set.seed(1205)
+```
+
+# Paths and directories
+
+```{r paths}
+dir.create(here::here("data", "derived"), recursive = TRUE, showWarnings = FALSE)
+dir.create(here::here("output", "tables"), recursive = TRUE, showWarnings = FALSE)
+dir.create(here::here("output", "figures"), recursive = TRUE, showWarnings = FALSE)
+
+storm_dir <- here::here("data", "raw", "stormevents")
+ice_path  <- here::here("data", "raw", "racism-county-income-inequity.csv")
+```
+
+# Census API key
+
+```{r census-key}
+# Recommended: save your API key once in ~/.Renviron as:
+# CENSUS_API_KEY=your_key_here
+
+census_key <- Sys.getenv("CENSUS_API_KEY")
+census_key <- Sys.getenv("badf0eedd1bb7d8401e956db4175714e4f129980") # Author's personal api key Will be removed after peer-review process.
+if (nzchar(census_key)) {
+  tidycensus::census_api_key(census_key, install = FALSE, overwrite = TRUE)
+} else {
+  warning("No Census API key found in environment variable CENSUS_API_KEY. ACS retrieval will fail unless the key is already installed.")
+}
+```
+
+# Helper functions
+
+```{r helpers}
+make_merge_window <- function(year) {
+  dplyr::case_when(
+    year %in% c(2005, 2006) ~ "2005-2009",
+    year == 2007 ~ "2006-2010",
+    year == 2008 ~ "2007-2011",
+    year == 2009 ~ "2008-2012",
+    year == 2010 ~ "2009-2013",
+    year == 2011 ~ "2010-2014",
+    year == 2012 ~ "2011-2015",
+    year == 2013 ~ "2012-2016",
+    year == 2014 ~ "2013-2017",
+    year == 2015 ~ "2014-2018",
+    year == 2016 ~ "2015-2019",
+    year == 2017 ~ "2016-2020",
+    year == 2018 ~ "2017-2021",
+    year %in% c(2019, 2020, 2021, 2022) ~ "2018-2022",
+    TRUE ~ NA_character_
+  )
+}
+
+fit_zinb <- function(formula, data) {
+  glmmTMB(
+    formula = formula,
+    ziformula = ~ 1,
+    family = nbinom2,
+    data = data
+  )
+}
+
+extract_quintile_irrs <- function(model, outcome_label) {
+  broom.mixed::tidy(model, effects = "fixed", component = "cond", conf.int = TRUE) %>%
+    dplyr::filter(grepl("^ice_quintile_f", term)) %>%
+    dplyr::mutate(
+      outcome = outcome_label,
+      quintile = sub("^ice_quintile_f", "", term),
+      IRR = exp(estimate),
+      IRR_low = exp(conf.low),
+      IRR_high = exp(conf.high),
+      IRR_CI = sprintf("%.2f [%.2f, %.2f]", IRR, IRR_low, IRR_high)
+    ) %>%
+    dplyr::select(outcome, quintile, IRR, IRR_low, IRR_high, IRR_CI, p.value)
+}
+
+save_docx_table <- function(ft, title, path, style = "heading 1") {
+  doc <- officer::read_docx()
+  doc <- officer::body_add_par(doc, title, style = style)
+  doc <- flextable::body_add_flextable(doc, ft)
+  print(doc, target = path)
+}
+```
+
+# 1. Load and combine Storm Events data
+
+```{r storm-load}
+storm_files <- list.files(
+  path = storm_dir,
+  pattern = "^StormEvents_details-ftp_v1\\.0_d\\d{4}_c20250520\\.csv$",
+  full.names = TRUE
+)
+
+stopifnot(length(storm_files) > 0)
+
+all_data <- purrr::map_dfr(
+  storm_files,
+  ~ readr::read_csv(.x, col_types = readr::cols(.default = readr::col_character()))
+)
+
+all_data <- all_data %>%
+  dplyr::mutate(
+    YEAR = as.integer(YEAR),
+    STATE_FIPS = as.integer(STATE_FIPS),
+    CZ_FIPS = as.integer(CZ_FIPS),
+    EPISODE_ID = as.integer(EPISODE_ID),
+    INJURIES_DIRECT = as.numeric(INJURIES_DIRECT),
+    DEATHS_DIRECT = as.numeric(DEATHS_DIRECT),
+    INJURIES_INDIRECT = as.numeric(INJURIES_INDIRECT),
+    DEATHS_INDIRECT = as.numeric(DEATHS_INDIRECT)
+  )
+```
+
+# 2. Filter years and storm event types
+
+```{r storm-filter}
+storm_event_types <- c(
+  "Hurricane (Typhoon)",
+  "Tropical Storm",
+  "Storm Surge/Tide",
+  "Coastal Flood",
+  "Flash Flood",
+  "High Wind",
+  "Tornado"
+)
+
+data <- all_data %>%
+  dplyr::filter(YEAR >= 2005, YEAR <= 2022, EVENT_TYPE %in% storm_event_types) %>%
+  dplyr::mutate(
+    county_fips = sprintf("%02d%03d", STATE_FIPS, CZ_FIPS),
+    year = as.integer(YEAR),
+    merge_window = make_merge_window(year)
+  ) %>%
+  dplyr::filter(!is.na(merge_window), !is.na(county_fips))
+```
+
+# 3. Load ICE data
+
+```{r ice-load}
+ice <- readr::read_csv(ice_path, show_col_types = FALSE) %>%
+  dplyr::mutate(
+    statefips = as.integer(statefips),
+    countyfips = as.integer(countyfips),
+    county_fips = sprintf("%02d%03d", statefips, countyfips),
+    merge_window = year
+  )
+
+stopifnot(all(c("county_fips", "merge_window", "ice_wanh_ba") %in% names(ice)))
+```
+
+# 4. Merge storm data and ICE
+
+```{r merge-ice}
+merged_df <- data %>%
+  dplyr::left_join(ice, by = c("county_fips", "merge_window"))
+```
+
+# 5. Retrieve ACS population
+
+```{r acs-pop}
+acs_windows <- c(
+  "2005-2009", "2006-2010", "2007-2011", "2008-2012", "2009-2013",
+  "2010-2014", "2011-2015", "2012-2016", "2013-2017", "2014-2018",
+  "2015-2019", "2016-2020", "2017-2021", "2018-2022"
+)
+acs_end_years <- as.integer(substr(acs_windows, 6, 9))
+
+pop_data <- purrr::map2_dfr(acs_windows, acs_end_years, ~{
+  tidycensus::get_acs(
+    geography = "county",
+    variables = "B01003_001",
+    year = .y,
+    survey = "acs5",
+    output = "wide"
+  ) %>%
+    dplyr::mutate(merge_window = .x)
+}) %>%
+  dplyr::transmute(
+    county_fips = GEOID,
+    merge_window,
+    county_population = B01003_001E
+  )
+
+merged_df <- merged_df %>%
+  dplyr::left_join(pop_data, by = c("county_fips", "merge_window"))
+```
+
+# 6. Retrieve ACS covariates
+
+```{r acs-covariates}
+acs_vars <- c(
+  tot_pop_race = "B03002_001",
+  nh_black     = "B03002_004",
+  med_hh_inc   = "B19013_001",
+  tot_pop_age  = "B01001_001",
+  m65_66       = "B01001_020",
+  m67_69       = "B01001_021",
+  m70_74       = "B01001_022",
+  m75_79       = "B01001_023",
+  m80_84       = "B01001_024",
+  m85up        = "B01001_025",
+  f65_66       = "B01001_044",
+  f67_69       = "B01001_045",
+  f70_74       = "B01001_046",
+  f75_79       = "B01001_047",
+  f80_84       = "B01001_048",
+  f85up        = "B01001_049"
+)
+
+acs_covars <- purrr::map2_dfr(acs_windows, acs_end_years, ~{
+  tidycensus::get_acs(
+    geography = "county",
+    variables = acs_vars,
+    year = .y,
+    survey = "acs5",
+    output = "wide"
+  ) %>%
+    dplyr::mutate(merge_window = .x)
+}) %>%
+  dplyr::mutate(
+    county_fips = GEOID,
+    pct_black = 100 * (nh_blackE / tot_pop_raceE),
+    median_hh_income = med_hh_incE,
+    pop_65plus = m65_66E + m67_69E + m70_74E + m75_79E + m80_84E + m85upE +
+      f65_66E + f67_69E + f70_74E + f75_79E + f80_84E + f85upE,
+    pct_age65 = 100 * (pop_65plus / tot_pop_ageE)
+  ) %>%
+  dplyr::select(county_fips, merge_window, pct_black, median_hh_income, pct_age65)
+
+merged_df <- merged_df %>%
+  dplyr::left_join(acs_covars, by = c("county_fips", "merge_window")) %>%
+  dplyr::mutate(
+    pct_black_z = as.numeric(scale(pct_black)),
+    median_hh_income_z = as.numeric(scale(median_hh_income)),
+    pct_age65_z = as.numeric(scale(pct_age65))
+  )
+```
+
+# 7. Construct analytic variables
+
+```{r analytic-vars}
+merged_df <- merged_df %>%
+  dplyr::filter(!is.na(ice_wanh_ba), !is.na(county_population), county_population > 0) %>%
+  dplyr::mutate(
+    ice_quintile = dplyr::ntile(ice_wanh_ba, 5),
+    ice_quintile_f = factor(
+      ice_quintile,
+      levels = c(1, 2, 3, 4, 5),
+      labels = c("Q1", "Q2", "Q3", "Q4", "Q5")
+    ),
+    log_pop = log(county_population)
+  )
+
+readr::write_csv(merged_df, here::here("data", "derived", "analytic_dataset.csv"))
+```
+
+# 8. Descriptive table by ICE quintile
+ 
+```{r table1}
+summary_table <- merged_df %>%
+  dplyr::group_by(ice_quintile) %>%
+  dplyr::summarise(
+    Counties = dplyr::n_distinct(county_fips),
+    `Storm Events` = dplyr::n_distinct(EPISODE_ID),
+    `Direct Injuries (per 100,000 people)` = mean((INJURIES_DIRECT / county_population) * 1e5, na.rm = TRUE),
+    `Direct Deaths (per 100,000 people)` = mean((DEATHS_DIRECT / county_population) * 1e5, na.rm = TRUE),
+    `Indirect Injuries (per 100,000 people)` = mean((INJURIES_INDIRECT / county_population) * 1e5, na.rm = TRUE),
+    `Indirect Deaths (per 100,000 people)` = mean((DEATHS_INDIRECT / county_population) * 1e5, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(dplyr::across(where(is.numeric), ~round(.x, 2)))
+
+ft_summary <- flextable::flextable(summary_table) %>%
+  flextable::autofit() %>%
+  flextable::set_table_properties(layout = "autofit", width = 0.95)
+
+save_docx_table(
+  ft = ft_summary,
+  title = "Storm-Related Health Outcomes by ICE Quintile, 2005–2022",
+  path = here::here("output", "tables", "ICE_Descriptive_Stats_Per100k.docx")
+)
+```
+
+# 9. Primary and sensitivity models
+
+```{r primary-models}
+model_di_linear <- fit_zinb(INJURIES_DIRECT ~ ice_quintile + offset(log(county_population)) + (1 | county_fips), merged_df)
+model_dd_linear <- fit_zinb(DEATHS_DIRECT ~ ice_quintile + offset(log(county_population)) + (1 | county_fips), merged_df)
+model_ii_linear <- fit_zinb(INJURIES_INDIRECT ~ ice_quintile + offset(log(county_population)) + (1 | county_fips), merged_df)
+model_id_linear <- fit_zinb(DEATHS_INDIRECT ~ ice_quintile + offset(log(county_population)) + (1 | county_fips), merged_df)
+
+model_di_linear_adj <- fit_zinb(INJURIES_DIRECT ~ ice_quintile + pct_black_z + median_hh_income_z + pct_age65_z + offset(log(county_population)) + (1 | county_fips), merged_df)
+model_dd_linear_adj <- fit_zinb(DEATHS_DIRECT ~ ice_quintile + pct_black_z + median_hh_income_z + pct_age65_z + offset(log(county_population)) + (1 | county_fips), merged_df)
+model_ii_linear_adj <- fit_zinb(INJURIES_INDIRECT ~ ice_quintile + pct_black_z + median_hh_income_z + pct_age65_z + offset(log(county_population)) + (1 | county_fips), merged_df)
+model_id_linear_adj <- fit_zinb(DEATHS_INDIRECT ~ ice_quintile + pct_black_z + median_hh_income_z + pct_age65_z + offset(log(county_population)) + (1 | county_fips), merged_df)
+```
+
+```{r primary-models-table}
+reg_table_adj <- modelsummary::modelsummary(
+  list(
+    "Direct injuries (base)" = model_di_linear,
+    "Direct injuries (+ACS)" = model_di_linear_adj,
+    "Direct deaths (base)" = model_dd_linear,
+    "Direct deaths (+ACS)" = model_dd_linear_adj,
+    "Indirect injuries (base)" = model_ii_linear,
+    "Indirect injuries (+ACS)" = model_ii_linear_adj,
+    "Indirect deaths (base)" = model_id_linear,
+    "Indirect deaths (+ACS)" = model_id_linear_adj
+  ),
+  component = "cond",
+  exponentiate = TRUE,
+  statistic = "conf.int",
+  coef_map = c(
+    "ice_quintile" = "ICE quintile (per 1-quintile)",
+    "pct_black_z" = "% non-Hispanic Black (z)",
+    "median_hh_income_z" = "Median HH income (z)",
+    "pct_age65_z" = "% age ≥65 (z)"
+  ),
+  stars = TRUE,
+  fmt = 2,
+  output = "flextable"
+)
+
+save_docx_table(
+  ft = reg_table_adj,
+  title = "Sensitivity models adjusting for county sociodemographics (ACS)",
+  path = here::here("output", "tables", "ICE_Models_ACS_Adjusted.docx")
+)
+```
+
+# 10. Spline models
+
+```{r spline-models}
+model_di_spline <- fit_zinb(INJURIES_DIRECT ~ splines::ns(ice_wanh_ba, df = 3) + offset(log_pop) + (1 | county_fips), merged_df)
+model_dd_spline <- fit_zinb(DEATHS_DIRECT ~ splines::ns(ice_wanh_ba, df = 3) + offset(log_pop) + (1 | county_fips), merged_df)
+model_ii_spline <- fit_zinb(INJURIES_INDIRECT ~ splines::ns(ice_wanh_ba, df = 3) + offset(log_pop) + (1 | county_fips), merged_df)
+model_id_spline <- fit_zinb(DEATHS_INDIRECT ~ splines::ns(ice_wanh_ba, df = 3) + offset(log_pop) + (1 | county_fips), merged_df)
+```
+
+```{r spline-curves}
+get_irr_curve <- function(model, data, ice_var = "ice_wanh_ba", q = c(0.01, 0.99), outcome_label = "Outcome", offset_var = "log_pop", offset_value = 0) {
+  pred <- ggeffects::ggpredict(
+    model,
+    terms = paste0(ice_var, " [all]"),
+    type = "count",
+    condition = setNames(offset_value, offset_var)
+  ) %>%
+    as.data.frame()
+
+  if (!"x" %in% names(pred)) {
+    if (ice_var %in% names(pred)) pred$x <- pred[[ice_var]] else stop("Could not find predictor column in ggpredict output.")
+  }
+
+  xr <- as.numeric(stats::quantile(data[[ice_var]], probs = q, na.rm = TRUE))
+  pred <- pred %>% dplyr::filter(x >= xr[1], x <= xr[2])
+
+  if (any(pred$x == 0)) {
+    ref <- pred$predicted[pred$x == 0][1]
+  } else {
+    ref_row <- ggeffects::ggpredict(
+      model,
+      terms = paste0(ice_var, " [0]"),
+      type = "count",
+      condition = setNames(offset_value, offset_var)
+    ) %>% as.data.frame()
+    ref <- ref_row$predicted[1]
+  }
+
+  pred %>%
+    dplyr::mutate(
+      IRR = predicted / ref,
+      IRR_low = conf.low / ref,
+      IRR_high = conf.high / ref,
+      outcome = outcome_label
+    )
+}
+
+pred_all <- dplyr::bind_rows(
+  get_irr_curve(model_di_spline, merged_df, outcome_label = "Direct injuries"),
+  get_irr_curve(model_dd_spline, merged_df, outcome_label = "Direct deaths"),
+  get_irr_curve(model_ii_spline, merged_df, outcome_label = "Indirect injuries"),
+  get_irr_curve(model_id_spline, merged_df, outcome_label = "Indirect deaths")
+)
+
+panel_plot <- ggplot2::ggplot(pred_all, ggplot2::aes(x = x, y = IRR)) +
+  ggplot2::geom_ribbon(ggplot2::aes(ymin = IRR_low, ymax = IRR_high), alpha = 0.2) +
+  ggplot2::geom_line(linewidth = 1.1) +
+  ggplot2::geom_hline(yintercept = 1, linetype = "dashed", alpha = 0.5) +
+  ggplot2::facet_wrap(~ outcome, nrow = 2, scales = "free_y") +
+  ggplot2::labs(
+    x = "ICE (racialized economic concentration)",
+    y = "Incidence rate ratio (IRR), referenced to ICE = 0"
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+
+panel_plot
+
+ggplot2::ggsave(
+  filename = here::here("output", "figures", "panel_plot_spline_offset.tiff"),
+  plot = panel_plot,
+  width = 10,
+  height = 7,
+  dpi = 600,
+  units = "in",
+  compression = "lzw"
+)
+```
+
+# 11. Model diagnostics
+
+```{r diagnostics}
+AIC_comparison <- tibble::tibble(
+  Outcome = c("Direct injuries", "Direct deaths", "Indirect injuries", "Indirect deaths"),
+  Linear_AIC = c(AIC(model_di_linear), AIC(model_dd_linear), AIC(model_ii_linear), AIC(model_id_linear)),
+  Spline_AIC = c(AIC(model_di_spline), AIC(model_dd_spline), AIC(model_ii_spline), AIC(model_id_spline))
+) %>%
+  dplyr::mutate(Delta_AIC = Linear_AIC - Spline_AIC)
+
+AIC_comparison
+
+lr_di <- lmtest::lrtest(model_di_linear, model_di_spline)
+lr_dd <- lmtest::lrtest(model_dd_linear, model_dd_spline)
+lr_ii <- lmtest::lrtest(model_ii_linear, model_ii_spline)
+lr_id <- lmtest::lrtest(model_id_linear, model_id_spline)
+
+lr_di
+lr_dd
+lr_ii
+lr_id
+```
+
+# 12. Categorical ICE sensitivity analysis
+
+```{r categorical-models}
+m_di_cat <- fit_zinb(INJURIES_DIRECT ~ ice_quintile_f + offset(log(county_population)) + (1 | county_fips), merged_df)
+m_dd_cat <- fit_zinb(DEATHS_DIRECT ~ ice_quintile_f + offset(log(county_population)) + (1 | county_fips), merged_df)
+m_ii_cat <- fit_zinb(INJURIES_INDIRECT ~ ice_quintile_f + offset(log(county_population)) + (1 | county_fips), merged_df)
+m_id_cat <- fit_zinb(DEATHS_INDIRECT ~ ice_quintile_f + offset(log(county_population)) + (1 | county_fips), merged_df)
+
+cat_irrs <- dplyr::bind_rows(
+  extract_quintile_irrs(m_di_cat, "Direct injuries"),
+  extract_quintile_irrs(m_dd_cat, "Direct deaths"),
+  extract_quintile_irrs(m_ii_cat, "Indirect injuries"),
+  extract_quintile_irrs(m_id_cat, "Indirect deaths")
+)
+
+cat_irrs
+```
+
+```{r categorical-table}
+tab_wide <- cat_irrs %>%
+  dplyr::select(outcome, quintile, IRR_CI) %>%
+  tidyr::pivot_wider(names_from = outcome, values_from = IRR_CI) %>%
+  dplyr::arrange(factor(quintile, levels = c("Q2", "Q3", "Q4", "Q5")))
+
+ft_cat <- flextable::flextable(tab_wide) %>%
+  flextable::set_header_labels(
+    quintile = "ICE quintile (ref = Q1)",
+    `Direct injuries` = "Direct injuries IRR [95% CI]",
+    `Direct deaths` = "Direct deaths IRR [95% CI]",
+    `Indirect injuries` = "Indirect injuries IRR [95% CI]",
+    `Indirect deaths` = "Indirect deaths IRR [95% CI]"
+  ) %>%
+  flextable::autofit()
+
+save_docx_table(
+  ft = ft_cat,
+  title = "Supplementary Table 2. Multilevel zero-inflated negative binomial regression estimates using ICE quintiles as a categorical exposure (reference = Q1, most disadvantaged)",
+  path = here::here("output", "tables", "supp_table_quintiles.docx"),
+  style = "heading 2"
+)
+```
+
+```{r categorical-figure}
+cat_irrs_plot <- cat_irrs %>%
+  dplyr::mutate(
+    outcome = factor(outcome, levels = c("Direct injuries", "Direct deaths", "Indirect injuries", "Indirect deaths")),
+    quintile = factor(quintile, levels = c("Q2", "Q3", "Q4", "Q5"))
+  )
+
+forest_plot <- ggplot2::ggplot(cat_irrs_plot, ggplot2::aes(x = quintile, y = IRR, ymin = IRR_low, ymax = IRR_high)) +
+  ggplot2::geom_pointrange() +
+  ggplot2::geom_hline(yintercept = 1, linetype = "dashed", alpha = 0.6) +
+  ggplot2::facet_wrap(~ outcome, scales = "free_y", nrow = 2) +
+  ggplot2::labs(
+    x = "ICE quintile (reference = Q1, most disadvantaged)",
+    y = "Incidence rate ratio (IRR)"
+  ) +
+  ggplot2::theme_minimal(base_size = 13)
+
+forest_plot
+
+ggplot2::ggsave(
+  filename = here::here("output", "figures", "supp_forestplot_quintiles.tiff"),
+  plot = forest_plot,
+  width = 10,
+  height = 7,
+  dpi = 600,
+  units = "in",
+  compression = "lzw"
+)
+```
+
+# 13. ICE distribution figure
+
+```{r ice-hist}
+hist_plot <- ggplot2::ggplot(merged_df, ggplot2::aes(x = ice_wanh_ba)) +
+  ggplot2::geom_histogram(binwidth = 0.05, color = "black", fill = "gray60", boundary = 0) +
+  ggplot2::labs(
+    x = "ICE score (racialized economic concentration)",
+    y = "Number of county-event observations"
+  ) +
+  ggplot2::theme_classic(base_size = 14) +
+  ggplot2::theme(
+    axis.title = ggplot2::element_text(face = "bold"),
+    axis.text = ggplot2::element_text(color = "black")
+  )
+
+hist_plot
+
+ggplot2::ggsave(
+  filename = here::here("output", "figures", "ice_score_histogram.jpg"),
+  plot = hist_plot,
+  dpi = 600,
+  width = 8,
+  height = 5,
+  units = "in"
+)
+```
+
+# 14. County maps
+
+```{r county-maps}
+# Most frequent ICE quintile per county across the study period
+ice_mode <- merged_df %>%
+  dplyr::group_by(county_fips) %>%
+  dplyr::summarise(
+    ice_quintile_mode = as.integer(names(which.max(table(ice_quintile)))),
+    total_events = dplyr::n(),
+    .groups = "drop"
+  )
+
+us_counties <- tigris::counties(cb = TRUE, resolution = "5m", year = 2020) %>%
+  sf::st_transform(crs = 4326) %>%
+  dplyr::mutate(county_fips = GEOID)
+
+exclude_states <- c("02", "15", "60", "66", "69", "72", "78")
+
+map_data_conus <- us_counties %>%
+  dplyr::left_join(ice_mode, by = "county_fips") %>%
+  dplyr::filter(!(STATEFP %in% exclude_states))
+
+ice_map <- ggplot2::ggplot(map_data_conus) +
+  ggplot2::geom_sf(ggplot2::aes(fill = factor(ice_quintile_mode)), color = NA) +
+  viridis::scale_fill_viridis(discrete = TRUE, name = "ICE Quintile\n(mode, 2005–2022)", na.value = "lightgray") +
+  ggplot2::labs(title = "County-level ICE quintiles") +
+  ggplot2::theme_void() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(hjust = 0.5, face = "bold", size = 16),
+    legend.title = ggplot2::element_text(size = 12),
+    legend.text = ggplot2::element_text(size = 10)
+  )
+
+events_map <- ggplot2::ggplot(map_data_conus) +
+  ggplot2::geom_sf(ggplot2::aes(fill = total_events), color = NA) +
+  viridis::scale_fill_viridis(
+    option = "magma",
+    direction = -1,
+    trans = "log10",
+    name = "Storm events\n(2005–2022)",
+    na.value = "lightgray"
+  ) +
+  ggplot2::labs(title = "Total storm-related events per county (2005–2022)") +
+  ggplot2::theme_void() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(hjust = 0.5, face = "bold", size = 16),
+    legend.title = ggplot2::element_text(size = 12),
+    legend.text = ggplot2::element_text(size = 10)
+  )
+
+ice_map
+events_map
+
+ggplot2::ggsave(here::here("output", "figures", "ICE_quintile_mode_map.png"), ice_map, width = 10, height = 6, dpi = 300)
+ggplot2::ggsave(here::here("output", "figures", "storm_event_map_conus.png"), events_map, width = 10, height = 6, dpi = 300)
+```
