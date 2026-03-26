@@ -74,7 +74,6 @@ ice_path  <- here::here("data", "raw", "racism-county-income-inequity.csv")
 # CENSUS_API_KEY=your_key_here
 
 census_key <- Sys.getenv("CENSUS_API_KEY")
-census_key <- Sys.getenv("badf0eedd1bb7d8401e956db4175714e4f129980") # Author's personal api key Will be removed after peer-review process.
 if (nzchar(census_key)) {
   tidycensus::census_api_key(census_key, install = FALSE, overwrite = TRUE)
 } else {
