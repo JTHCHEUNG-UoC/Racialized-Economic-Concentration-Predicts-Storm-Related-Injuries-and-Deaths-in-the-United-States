@@ -2,10 +2,11 @@
 
 This repository contains the data, code, and documentation for the study: **“Racialized Economic Concentration Predicts Storm-Related Injuries and Deaths in the United States, 2005–2022”**
 
-# Overview
-This study examines whether counties with higher levels of racialized economic concentration, as measured by the Index of Concentration at the Extremes (ICE), experience higher rates of storm-related injuries and deaths.
+## Overview
 
-By linking county-level ICE measures with NOAA’s Storm Events Database, we evaluate whether racialized economic concentration is associated with increased vulnerability to storm-attributed health harms, independent of population size.
+This study investigates whether counties with higher ICE values, reflecting a greater concentration of high-income non-Hispanic White households relative to low-income Black households, experience lower rates of storm-related injuries and deaths.
+
+By linking county-level ICE measures with NOAA’s Storm Events Database, we evaluate whether racialized economic concentration is associated with vulnerability to storm-attributed health harms, independent of population size.
 
 This investigation is situated within a socioecological framework of public health. Racialized economic concentration reflects the spatial organization of advantage and disadvantage across populations and does not operate in isolation. It is shaped by and interacts with systems of housing, infrastructure, healthcare access, and emergency preparedness. These structural conditions may influence patterns of exposure, susceptibility, and recovery in the context of climate-related hazards.
 
