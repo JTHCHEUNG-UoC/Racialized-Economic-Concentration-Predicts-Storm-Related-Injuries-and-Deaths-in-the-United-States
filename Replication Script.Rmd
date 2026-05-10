@@ -20,7 +20,7 @@ knitr::opts_chunk$set(
 
 This document reproduces the main and supplementary analyses for:
 
-**"Racialized Economic Concentration and Storm-Related Injuries and Deaths in the United States, 2005–2022"**
+**"Racialized Economic Concentration Predicts Storm-Related Injuries and Deaths in the United States, 2005–2022"**
 
 It:
 1. loads NOAA Storm Events data,
