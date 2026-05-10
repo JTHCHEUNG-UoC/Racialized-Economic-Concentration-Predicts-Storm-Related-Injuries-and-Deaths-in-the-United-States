@@ -603,19 +603,57 @@ map_data_conus <- us_counties %>%
   dplyr::left_join(ice_mode, by = "county_fips") %>%
   dplyr::filter(!(STATEFP %in% exclude_states))
 
+# Coordinate settings for CONUS maps with latitude/longitude markings
+coord_conus <- ggplot2::coord_sf(
+  xlim = c(-125, -66),
+  ylim = c(24, 50),
+  expand = FALSE,
+  datum = sf::st_crs(4326)
+)
+
 ice_map <- ggplot2::ggplot(map_data_conus) +
-  ggplot2::geom_sf(ggplot2::aes(fill = factor(ice_quintile_mode)), color = NA) +
-  viridis::scale_fill_viridis(discrete = TRUE, name = "ICE Quintile\n(mode, 2005–2022)", na.value = "lightgray") +
+  ggplot2::geom_sf(
+    ggplot2::aes(fill = factor(ice_quintile_mode)),
+    color = NA
+  ) +
+  viridis::scale_fill_viridis(
+    discrete = TRUE,
+    name = "ICE Quintile\n(mode, 2005–2022)",
+    na.value = "lightgray"
+  ) +
+  coord_conus +
+  ggplot2::scale_x_continuous(
+    breaks = c(-120, -100, -80),
+    labels = function(x) paste0(abs(x), "°W")
+  ) +
+  ggplot2::scale_y_continuous(
+    breaks = c(30, 40, 50),
+    labels = function(y) paste0(y, "°N")
+  ) +
   ggplot2::labs(title = "County-level ICE quintiles") +
   ggplot2::theme_void() +
   ggplot2::theme(
-    plot.title = ggplot2::element_text(hjust = 0.5, face = "bold", size = 16),
+    plot.title = ggplot2::element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 16
+    ),
     legend.title = ggplot2::element_text(size = 12),
-    legend.text = ggplot2::element_text(size = 10)
+    legend.text = ggplot2::element_text(size = 10),
+    axis.text = ggplot2::element_text(size = 9),
+    axis.ticks = ggplot2::element_line(linewidth = 0.3),
+    panel.border = ggplot2::element_rect(
+      fill = NA,
+      color = "black",
+      linewidth = 1
+    )
   )
 
 events_map <- ggplot2::ggplot(map_data_conus) +
-  ggplot2::geom_sf(ggplot2::aes(fill = total_events), color = NA) +
+  ggplot2::geom_sf(
+    ggplot2::aes(fill = total_events),
+    color = NA
+  ) +
   viridis::scale_fill_viridis(
     option = "magma",
     direction = -1,
@@ -623,17 +661,50 @@ events_map <- ggplot2::ggplot(map_data_conus) +
     name = "Storm events\n(2005–2022)",
     na.value = "lightgray"
   ) +
+  coord_conus +
+  ggplot2::scale_x_continuous(
+    breaks = c(-120, -100, -80),
+    labels = function(x) paste0(abs(x), "°W")
+  ) +
+  ggplot2::scale_y_continuous(
+    breaks = c(30, 40, 50),
+    labels = function(y) paste0(y, "°N")
+  ) +
   ggplot2::labs(title = "Total storm-related events per county (2005–2022)") +
   ggplot2::theme_void() +
   ggplot2::theme(
-    plot.title = ggplot2::element_text(hjust = 0.5, face = "bold", size = 16),
+    plot.title = ggplot2::element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 16
+    ),
     legend.title = ggplot2::element_text(size = 12),
-    legend.text = ggplot2::element_text(size = 10)
+    legend.text = ggplot2::element_text(size = 10),
+    axis.text = ggplot2::element_text(size = 9),
+    axis.ticks = ggplot2::element_line(linewidth = 0.3),
+    panel.border = ggplot2::element_rect(
+      fill = NA,
+      color = "black",
+      linewidth = 1
+    )
   )
 
 ice_map
 events_map
 
-ggplot2::ggsave(here::here("output", "figures", "ICE_quintile_mode_map.png"), ice_map, width = 10, height = 6, dpi = 300)
-ggplot2::ggsave(here::here("output", "figures", "storm_event_map_conus.png"), events_map, width = 10, height = 6, dpi = 300)
+ggplot2::ggsave(
+  here::here("output", "figures", "ICE_quintile_mode_map.png"),
+  ice_map,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+ggplot2::ggsave(
+  here::here("output", "figures", "storm_event_map_conus.png"),
+  events_map,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
 ```
