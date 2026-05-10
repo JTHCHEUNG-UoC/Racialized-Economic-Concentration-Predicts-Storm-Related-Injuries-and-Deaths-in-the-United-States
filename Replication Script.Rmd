@@ -1,5 +1,5 @@
 ---
-title: "Racialized Economic Concentration and Storm-Related Injuries and Deaths in the United States, 2005–2022"
+title: "Racialized Economic Concentration Predicts Storm-Related Injuries and Deaths in the United States, 2005–2022"
 output:
   html_document:
     toc: true
