@@ -1,5 +1,5 @@
 ---
-title: "Racialized Economic Concentration Predicts Storm-Related Injuries and Deaths in the United States, 2005–2022"
+title: "Racialized Economic Concentration and Storm-Related Injuries and Deaths in the United States, 2005–2022"
 output:
   html_document:
     toc: true
@@ -20,7 +20,7 @@ knitr::opts_chunk$set(
 
 This document reproduces the main and supplementary analyses for:
 
-**"Racialized Economic Concentration Predicts Storm-Related Injuries and Deaths in the United States, 2005–2022"**
+**"Racialized Economic Concentration and Storm-Related Injuries and Deaths in the United States, 2005–2022"**
 
 It:
 1. loads NOAA Storm Events data,
@@ -391,7 +391,16 @@ model_id_spline <- fit_zinb(DEATHS_INDIRECT ~ splines::ns(ice_wanh_ba, df = 3) +
 ```
 
 ```{r spline-curves}
-get_irr_curve <- function(model, data, ice_var = "ice_wanh_ba", q = c(0.01, 0.99), outcome_label = "Outcome", offset_var = "log_pop", offset_value = 0) {
+get_irr_curve <- function(
+  model,
+  data,
+  ice_var = "ice_wanh_ba",
+  q = c(0.01, 0.99),
+  outcome_label = "Outcome",
+  offset_var = "log_pop",
+  offset_value = 0
+) {
+
   pred <- ggeffects::ggpredict(
     model,
     terms = paste0(ice_var, " [all]"),
@@ -401,21 +410,38 @@ get_irr_curve <- function(model, data, ice_var = "ice_wanh_ba", q = c(0.01, 0.99
     as.data.frame()
 
   if (!"x" %in% names(pred)) {
-    if (ice_var %in% names(pred)) pred$x <- pred[[ice_var]] else stop("Could not find predictor column in ggpredict output.")
+    if (ice_var %in% names(pred)) {
+      pred$x <- pred[[ice_var]]
+    } else {
+      stop("Could not find predictor column in ggpredict output.")
+    }
   }
 
-  xr <- as.numeric(stats::quantile(data[[ice_var]], probs = q, na.rm = TRUE))
-  pred <- pred %>% dplyr::filter(x >= xr[1], x <= xr[2])
+  xr <- as.numeric(
+    stats::quantile(
+      data[[ice_var]],
+      probs = q,
+      na.rm = TRUE
+    )
+  )
+
+  pred <- pred %>%
+    dplyr::filter(x >= xr[1], x <= xr[2])
 
   if (any(pred$x == 0)) {
+
     ref <- pred$predicted[pred$x == 0][1]
+
   } else {
+
     ref_row <- ggeffects::ggpredict(
       model,
       terms = paste0(ice_var, " [0]"),
       type = "count",
       condition = setNames(offset_value, offset_var)
-    ) %>% as.data.frame()
+    ) %>%
+      as.data.frame()
+
     ref <- ref_row$predicted[1]
   }
 
@@ -429,33 +455,121 @@ get_irr_curve <- function(model, data, ice_var = "ice_wanh_ba", q = c(0.01, 0.99
 }
 
 pred_all <- dplyr::bind_rows(
-  get_irr_curve(model_di_spline, merged_df, outcome_label = "Direct injuries"),
-  get_irr_curve(model_dd_spline, merged_df, outcome_label = "Direct deaths"),
-  get_irr_curve(model_ii_spline, merged_df, outcome_label = "Indirect injuries"),
-  get_irr_curve(model_id_spline, merged_df, outcome_label = "Indirect deaths")
+  get_irr_curve(
+    model_di_spline,
+    merged_df,
+    outcome_label = "Direct injuries"
+  ),
+  get_irr_curve(
+    model_dd_spline,
+    merged_df,
+    outcome_label = "Direct deaths"
+  ),
+  get_irr_curve(
+    model_ii_spline,
+    merged_df,
+    outcome_label = "Indirect injuries"
+  ),
+  get_irr_curve(
+    model_id_spline,
+    merged_df,
+    outcome_label = "Indirect deaths"
+  )
 )
 
-panel_plot <- ggplot2::ggplot(pred_all, ggplot2::aes(x = x, y = IRR)) +
-  ggplot2::geom_ribbon(ggplot2::aes(ymin = IRR_low, ymax = IRR_high), alpha = 0.2) +
-  ggplot2::geom_line(linewidth = 1.1) +
-  ggplot2::geom_hline(yintercept = 1, linetype = "dashed", alpha = 0.5) +
-  ggplot2::facet_wrap(~ outcome, nrow = 2, scales = "free_y") +
+pred_all <- pred_all %>%
+  dplyr::mutate(
+    outcome = factor(
+      outcome,
+      levels = c(
+        "Direct injuries",
+        "Direct deaths",
+        "Indirect injuries",
+        "Indirect deaths"
+      ),
+      labels = c(
+        "a  Direct injuries",
+        "b  Direct deaths",
+        "c  Indirect injuries",
+        "d  Indirect deaths"
+      )
+    )
+  )
+
+panel_plot <- ggplot2::ggplot(
+  pred_all,
+  ggplot2::aes(x = x, y = IRR)
+) +
+
+  ggplot2::geom_ribbon(
+    ggplot2::aes(
+      ymin = IRR_low,
+      ymax = IRR_high
+    ),
+    fill = "#b8c4d6",
+    alpha = 0.30
+  ) +
+
+  ggplot2::geom_line(
+    color = "#222222",
+    linewidth = 1.3
+  ) +
+
+  ggplot2::geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "gray45",
+    linewidth = 0.5
+  ) +
+
+  ggplot2::facet_wrap(
+    ~ outcome,
+    nrow = 2,
+    scales = "free_y"
+  ) +
+
   ggplot2::labs(
-    x = "ICE (racialized economic concentration)",
+    x = "ICE score (racialized economic concentration)",
     y = "Incidence rate ratio (IRR), referenced to ICE = 0"
   ) +
-  ggplot2::theme_minimal(base_size = 13)
+
+  ggplot2::theme_classic(base_size = 14) +
+
+  ggplot2::theme(
+    strip.background = ggplot2::element_blank(),
+
+    strip.text = ggplot2::element_text(
+      face = "bold",
+      size = 13,
+      hjust = 0
+    ),
+
+    axis.title = ggplot2::element_text(
+      face = "bold",
+      size = 14
+    ),
+
+    axis.text = ggplot2::element_text(
+      color = "black",
+      size = 11
+    ),
+
+    panel.spacing = grid::unit(1.2, "lines")
+  )
 
 panel_plot
 
 ggplot2::ggsave(
-  filename = here::here("output", "figures", "panel_plot_spline_offset.tiff"),
+  filename = here::here(
+    "output",
+    "figures",
+    "panel_plot_spline_offset.tiff"
+  ),
   plot = panel_plot,
   width = 10,
   height = 7,
   dpi = 600,
-  units = "in",
-  compression = "lzw"
+  units = "in"
 )
 ```
 
@@ -527,19 +641,92 @@ save_docx_table(
 ```{r categorical-figure}
 cat_irrs_plot <- cat_irrs %>%
   dplyr::mutate(
-    outcome = factor(outcome, levels = c("Direct injuries", "Direct deaths", "Indirect injuries", "Indirect deaths")),
-    quintile = factor(quintile, levels = c("Q2", "Q3", "Q4", "Q5"))
+    outcome = factor(
+      outcome,
+      levels = c(
+        "Direct injuries",
+        "Direct deaths",
+        "Indirect injuries",
+        "Indirect deaths"
+      ),
+      labels = c(
+        "a  Direct injuries",
+        "b  Direct deaths",
+        "c  Indirect injuries",
+        "d  Indirect deaths"
+      )
+    ),
+    quintile = factor(
+      quintile,
+      levels = c("Q2", "Q3", "Q4", "Q5")
+    )
   )
 
-forest_plot <- ggplot2::ggplot(cat_irrs_plot, ggplot2::aes(x = quintile, y = IRR, ymin = IRR_low, ymax = IRR_high)) +
-  ggplot2::geom_pointrange() +
-  ggplot2::geom_hline(yintercept = 1, linetype = "dashed", alpha = 0.6) +
-  ggplot2::facet_wrap(~ outcome, scales = "free_y", nrow = 2) +
+forest_plot <- ggplot2::ggplot(
+  cat_irrs_plot,
+  ggplot2::aes(
+    x = quintile,
+    y = IRR,
+    ymin = IRR_low,
+    ymax = IRR_high
+  )
+) +
+  ggplot2::geom_pointrange(
+    color = "#222222",
+    linewidth = 0.7,
+    size = 0.6
+  ) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = IRR_low, ymax = IRR_high),
+    color = "#222222",
+    width = 0.12,
+    linewidth = 0.6
+  ) +
+  ggplot2::geom_point(
+    color = "#222222",
+    fill = "#b8c4d6",
+    shape = 21,
+    size = 3.0,
+    stroke = 0.8
+  ) +
+  ggplot2::geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    color = "gray45",
+    linewidth = 0.5
+  ) +
+  ggplot2::facet_wrap(
+    ~ outcome,
+    scales = "free_y",
+    nrow = 2
+  ) +
   ggplot2::labs(
     x = "ICE quintile (reference = Q1, most disadvantaged)",
     y = "Incidence rate ratio (IRR)"
   ) +
-  ggplot2::theme_minimal(base_size = 13)
+  ggplot2::theme_classic(base_size = 14) +
+  ggplot2::theme(
+    strip.background = ggplot2::element_blank(),
+    strip.text = ggplot2::element_text(
+      face = "bold",
+      size = 13,
+      hjust = 0
+    ),
+    axis.title = ggplot2::element_text(
+      face = "bold",
+      size = 14
+    ),
+    axis.text = ggplot2::element_text(
+      color = "black",
+      size = 11
+    ),
+    axis.line = ggplot2::element_line(
+      color = "black",
+      linewidth = 0.4
+    ),
+    panel.spacing = grid::unit(1.3, "lines"),
+    plot.margin = ggplot2::margin(8, 8, 8, 8)
+  )
 
 forest_plot
 
@@ -549,30 +736,53 @@ ggplot2::ggsave(
   width = 10,
   height = 7,
   dpi = 600,
-  units = "in",
-  compression = "lzw"
+  units = "in"
 )
 ```
 
 # 13. ICE distribution figure
 
 ```{r ice-hist}
-hist_plot <- ggplot2::ggplot(merged_df, ggplot2::aes(x = ice_wanh_ba)) +
-  ggplot2::geom_histogram(binwidth = 0.05, color = "black", fill = "gray60", boundary = 0) +
+hist_plot <- ggplot2::ggplot(
+  merged_df,
+  ggplot2::aes(x = ice_wanh_ba)
+) +
+  ggplot2::geom_histogram(
+    binwidth = 0.05,
+    color = "#222222",
+    fill = "#b8c4d6",
+    linewidth = 0.4,
+    boundary = 0
+  ) +
   ggplot2::labs(
     x = "ICE score (racialized economic concentration)",
     y = "Number of county-event observations"
   ) +
   ggplot2::theme_classic(base_size = 14) +
   ggplot2::theme(
-    axis.title = ggplot2::element_text(face = "bold"),
-    axis.text = ggplot2::element_text(color = "black")
+    axis.title = ggplot2::element_text(
+      face = "bold",
+      size = 14
+    ),
+    axis.text = ggplot2::element_text(
+      color = "black",
+      size = 11
+    ),
+    axis.line = ggplot2::element_line(
+      color = "black",
+      linewidth = 0.4
+    ),
+    plot.margin = ggplot2::margin(8, 8, 8, 8)
   )
 
 hist_plot
 
 ggplot2::ggsave(
-  filename = here::here("output", "figures", "ice_score_histogram.jpg"),
+  filename = here::here(
+    "output",
+    "figures",
+    "ice_score_histogram.tiff"
+  ),
   plot = hist_plot,
   dpi = 600,
   width = 8,
@@ -603,13 +813,35 @@ map_data_conus <- us_counties %>%
   dplyr::left_join(ice_mode, by = "county_fips") %>%
   dplyr::filter(!(STATEFP %in% exclude_states))
 
-# Coordinate settings for CONUS maps with latitude/longitude markings
 coord_conus <- ggplot2::coord_sf(
   xlim = c(-125, -66),
   ylim = c(24, 50),
   expand = FALSE,
   datum = sf::st_crs(4326)
 )
+
+map_theme <- ggplot2::theme_void() +
+  ggplot2::theme(
+    legend.title = ggplot2::element_text(size = 12),
+    legend.text = ggplot2::element_text(size = 10),
+
+    axis.text = ggplot2::element_text(
+      size = 9,
+      color = "black",
+      margin = ggplot2::margin(t = 4, r = 4, b = 4, l = 4)
+    ),
+
+    axis.ticks = ggplot2::element_line(
+      linewidth = 0.3,
+      color = "black"
+    ),
+
+    panel.border = ggplot2::element_rect(
+      fill = NA,
+      color = "black",
+      linewidth = 1
+    )
+  )
 
 ice_map <- ggplot2::ggplot(map_data_conus) +
   ggplot2::geom_sf(
@@ -618,7 +850,7 @@ ice_map <- ggplot2::ggplot(map_data_conus) +
   ) +
   viridis::scale_fill_viridis(
     discrete = TRUE,
-    name = "ICE Quintile\n(mode, 2005–2022)",
+    name = "ICE quintile\n(mode, 2005–2022)",
     na.value = "lightgray"
   ) +
   coord_conus +
@@ -630,24 +862,7 @@ ice_map <- ggplot2::ggplot(map_data_conus) +
     breaks = c(30, 40, 50),
     labels = function(y) paste0(y, "°N")
   ) +
-  ggplot2::labs(title = "County-level ICE quintiles") +
-  ggplot2::theme_void() +
-  ggplot2::theme(
-    plot.title = ggplot2::element_text(
-      hjust = 0.5,
-      face = "bold",
-      size = 16
-    ),
-    legend.title = ggplot2::element_text(size = 12),
-    legend.text = ggplot2::element_text(size = 10),
-    axis.text = ggplot2::element_text(size = 9),
-    axis.ticks = ggplot2::element_line(linewidth = 0.3),
-    panel.border = ggplot2::element_rect(
-      fill = NA,
-      color = "black",
-      linewidth = 1
-    )
-  )
+  map_theme
 
 events_map <- ggplot2::ggplot(map_data_conus) +
   ggplot2::geom_sf(
@@ -670,41 +885,27 @@ events_map <- ggplot2::ggplot(map_data_conus) +
     breaks = c(30, 40, 50),
     labels = function(y) paste0(y, "°N")
   ) +
-  ggplot2::labs(title = "Total storm-related events per county (2005–2022)") +
-  ggplot2::theme_void() +
-  ggplot2::theme(
-    plot.title = ggplot2::element_text(
-      hjust = 0.5,
-      face = "bold",
-      size = 16
-    ),
-    legend.title = ggplot2::element_text(size = 12),
-    legend.text = ggplot2::element_text(size = 10),
-    axis.text = ggplot2::element_text(size = 9),
-    axis.ticks = ggplot2::element_line(linewidth = 0.3),
-    panel.border = ggplot2::element_rect(
-      fill = NA,
-      color = "black",
-      linewidth = 1
-    )
-  )
+  map_theme
 
 ice_map
 events_map
 
 ggplot2::ggsave(
-  here::here("output", "figures", "ICE_quintile_mode_map.png"),
+  here::here("output", "figures", "ICE_quintile_mode_map.tiff"),
   ice_map,
-  width = 10,
-  height = 6,
-  dpi = 300
+  width = 12,
+  height = 7,
+  dpi = 600,
+  units = "in"
 )
 
 ggplot2::ggsave(
-  here::here("output", "figures", "storm_event_map_conus.png"),
+  here::here("output", "figures", "storm_event_map_conus.tiff"),
   events_map,
-  width = 10,
-  height = 6,
-  dpi = 300
+  width = 12,
+  height = 7,
+  dpi = 600,
+  units = "in"
 )
 ```
+
