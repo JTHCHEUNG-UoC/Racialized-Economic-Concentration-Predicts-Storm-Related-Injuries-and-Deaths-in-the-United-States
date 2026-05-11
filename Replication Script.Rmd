@@ -569,7 +569,8 @@ ggplot2::ggsave(
   width = 10,
   height = 7,
   dpi = 600,
-  units = "in"
+  units = "in",
+  compression = "lzw"
 )
 ```
 
@@ -736,7 +737,8 @@ ggplot2::ggsave(
   width = 10,
   height = 7,
   dpi = 600,
-  units = "in"
+  units = "in",
+  compression = "lzw"
 )
 ```
 
@@ -787,7 +789,8 @@ ggplot2::ggsave(
   dpi = 600,
   width = 8,
   height = 5,
-  units = "in"
+  units = "in",
+  compression = "lzw"
 )
 ```
 
@@ -896,7 +899,8 @@ ggplot2::ggsave(
   width = 12,
   height = 7,
   dpi = 600,
-  units = "in"
+  units = "in",
+  compression = "lzw"
 )
 
 ggplot2::ggsave(
@@ -905,7 +909,8 @@ ggplot2::ggsave(
   width = 12,
   height = 7,
   dpi = 600,
-  units = "in"
+  units = "in",
+  compression = "lzw"
 )
 ```
 
